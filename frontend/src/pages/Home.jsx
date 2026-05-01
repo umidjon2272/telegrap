@@ -18,12 +18,12 @@ export default function Home() {
   const [text, setText] = useState('')
   const [inCall, setInCall] = useState(false)
   const [incomingCall, setIncomingCall] = useState(null)
+  const [localStream, setLocalStream] = useState(null)
+  const [remoteStream, setRemoteStream] = useState(null)
   const messagesEndRef = useRef(null)
 
-  // WebRTC refs
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
-  const remoteAudioRef = useRef(null)
 
   // Search
   useEffect(() => {
@@ -37,7 +37,7 @@ export default function Home() {
     return () => clearTimeout(timer)
   }, [search])
 
-  // Load messages when user selected
+  // Load messages
   useEffect(() => {
     if (!selectedUser) return
     axios.get(`${API}/api/messages/${selectedUser._id}`)
@@ -55,10 +55,7 @@ export default function Home() {
     if (!socket) return
 
     socket.on('message:receive', (msg) => {
-      if (
-        selectedUser &&
-        (msg.sender === selectedUser._id || msg.receiver === selectedUser._id)
-      ) {
+      if (selectedUser && (msg.sender === selectedUser._id || msg.receiver === selectedUser._id)) {
         setMessages(prev => [...prev, msg])
       }
     })
@@ -67,12 +64,7 @@ export default function Home() {
       setMessages(prev => [...prev, msg])
     })
 
-    // Incoming call
     socket.on('call:incoming', async ({ callerId, offer }) => {
-      try {
-        const callerRes = await axios.get(`${API}/api/users/search?q=${callerId}`)
-        // We'll store raw callerId
-      } catch {}
       setIncomingCall({ callerId, offer })
     })
 
@@ -88,10 +80,7 @@ export default function Home() {
       }
     })
 
-    socket.on('call:ended', () => {
-      endCallCleanup()
-    })
-
+    socket.on('call:ended', () => endCallCleanup())
     socket.on('call:unavailable', () => {
       alert('Foydalanuvchi hozir mavjud emas')
       endCallCleanup()
@@ -125,8 +114,6 @@ export default function Home() {
     }
   }
 
-  // ─── WebRTC ───────────────────────────────────────────────
-
   const createPeerConnection = useCallback((targetId) => {
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -139,9 +126,7 @@ export default function Home() {
     }
 
     pc.ontrack = (event) => {
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = event.streams[0]
-      }
+      setRemoteStream(event.streams[0])
     }
 
     return pc
@@ -150,13 +135,17 @@ export default function Home() {
   const startCall = async () => {
     if (!selectedUser || !socket) return
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
       localStreamRef.current = stream
+      setLocalStream(stream)
+
       const pc = createPeerConnection(selectedUser._id)
       stream.getTracks().forEach(track => pc.addTrack(track, stream))
       pcRef.current = pc
+
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
+
       socket.emit('call:start', {
         callerId: user._id,
         receiverId: selectedUser._id,
@@ -164,21 +153,25 @@ export default function Home() {
       })
       setInCall(true)
     } catch (err) {
-      alert('Mikrofonga ruxsat berilmadi yoki xato yuz berdi')
+      alert('Kamera yoki mikrofonga ruxsat berilmadi!')
     }
   }
 
   const acceptCall = async () => {
     if (!incomingCall || !socket) return
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
       localStreamRef.current = stream
+      setLocalStream(stream)
+
       const pc = createPeerConnection(incomingCall.callerId)
       stream.getTracks().forEach(track => pc.addTrack(track, stream))
       pcRef.current = pc
+
       await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer))
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
+
       socket.emit('call:accept', { callerId: incomingCall.callerId, answer })
       setInCall(true)
       setIncomingCall(null)
@@ -203,6 +196,8 @@ export default function Home() {
       pcRef.current.close()
       pcRef.current = null
     }
+    setLocalStream(null)
+    setRemoteStream(null)
     setInCall(false)
     setIncomingCall(null)
   }
@@ -219,8 +214,6 @@ export default function Home() {
 
   return (
     <div className={styles.app}>
-      <audio ref={remoteAudioRef} autoPlay />
-
       {/* Sidebar */}
       <div className={styles.sidebar}>
         <div className={styles.sidebarHeader}>
@@ -298,9 +291,9 @@ export default function Home() {
                 className={`${styles.callBtn} ${inCall ? styles.callActive : ''}`}
                 onClick={inCall ? endCall : startCall}
                 disabled={!isOnline(selectedUser._id) && !inCall}
-                title={inCall ? "Tugatish" : "Qo'ng'iroq"}
+                title={inCall ? "Tugatish" : "Video qo'ng'iroq"}
               >
-                {inCall ? '📵' : '📞'}
+                {inCall ? '📵' : '📹'}
               </button>
             </div>
 
@@ -327,11 +320,7 @@ export default function Home() {
                 onChange={e => setText(e.target.value)}
                 onKeyDown={handleKeyDown}
               />
-              <button
-                className={styles.sendBtn}
-                onClick={sendMessage}
-                disabled={!text.trim()}
-              >
+              <button className={styles.sendBtn} onClick={sendMessage} disabled={!text.trim()}>
                 ➤
               </button>
             </div>
@@ -345,8 +334,14 @@ export default function Home() {
         )}
       </div>
 
-      {/* Call modals */}
-      {inCall && <CallModal onEnd={endCall} callee={selectedUser} />}
+      {inCall && (
+        <CallModal
+          onEnd={endCall}
+          callee={selectedUser}
+          localStream={localStream}
+          remoteStream={remoteStream}
+        />
+      )}
       {incomingCall && !inCall && (
         <IncomingCall
           callerId={incomingCall.callerId}
